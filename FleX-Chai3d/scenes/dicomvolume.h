@@ -530,7 +530,7 @@ private:
         mSpacingX = (sp && sp[0] > 0.0) ? (float)(sp[0] * 0.001) : 0.001f;
         mSpacingY = (sp && sp[1] > 0.0) ? (float)(sp[1] * 0.001) : 0.001f;
         double zsp = sorted ? sorter.GetZSpacing() : 0.0;
-        mSpacingZ = (zsp > 0.0) ? (float)(zsp * 0.001) : mSpacingX;
+        mSpacingZ = (zsp > 0.0) ? (float)(zsp * 0.001) : 0.001f;
 
         // Compute FleX world-space extents after axis permutation.
         // DICOM column (X) → FleX Z; DICOM row (Y) → FleX X; DICOM slice → FleX Y.
@@ -868,7 +868,10 @@ private:
 #ifdef _WIN32
         // Initialize COM only if not already done on this thread.
         HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        bool needsUninit = (hrCom == S_OK);   // only uninit if WE initialized
+        // S_OK: we initialized COM.  S_FALSE: already initialized on this thread.
+        // Both are success codes, but we must only call CoUninitialize if we
+        // were the ones who actually called CoInitializeEx successfully (S_OK).
+        bool needsUninit = (hrCom == S_OK);
 
         BROWSEINFOA bi = {};
         bi.lpszTitle = title;
