@@ -95,12 +95,17 @@ public:
         , mProxyVAO(0), mProxyVBO(0), mProxyEBO(0)
         , mDimX(0), mDimY(0), mDimZ(0)
         , mSpacingX(1.f), mSpacingY(1.f), mSpacingZ(1.f)
+        , mWorldHX(1.f), mWorldHY(1.f), mWorldHZ(1.f)
         , mDataMin(0.f), mDataMax(1.f)
         , mWindowCenter(0.5f), mWindowWidth(1.0f)
         , mRaySteps(128.f)
         , mHapticForceScale(1.0f)
         , mPaintMode(false)
         , mPaintRadius(3)
+        , mDrillMode(false)
+        , mDrillThreshold(0.3f)
+        , mDrillBrushRadius(2)
+        , mDrillForceScale(2.0f)
         , mLabelDirty(false)
         , mProxySizeHX(-1.f), mProxySizeHY(-1.f), mProxySizeHZ(-1.f)
     {
@@ -166,10 +171,28 @@ public:
             imguiSlider("W-Center",    &mWindowCenter,      0.0f, 1.0f,  0.005f);
             imguiSlider("W-Width",     &mWindowWidth,       0.01f, 1.0f, 0.005f);
             imguiSlider("Ray Steps",   &mRaySteps,          32.f, 512.f, 8.f);
-            imguiSlider("Haptic Scale",&mHapticForceScale,  0.f,  5.f,   0.05f);
 
-            if (imguiCheck("Paint Mode (segmentation)", mPaintMode))
+            imguiSeparatorLine();
+            imguiLabel("Haptic / Interaction");
+            imguiSlider("Haptic Scale",     &mHapticForceScale, 0.f, 5.f,  0.05f);
+            imguiSlider("Drill Force",      &mDrillForceScale,  0.f, 10.f, 0.1f);
+            imguiSlider("Drill Threshold",  &mDrillThreshold,   0.f, 1.0f, 0.01f);
+
+            imguiSeparatorLine();
+            imguiLabel("Tool Mode");
+
+            // Drill mode: tool penetrates and removes material; force resists motion.
+            if (imguiCheck("Drill Mode  (remove material)", mDrillMode))
+            {
+                mDrillMode = !mDrillMode;
+                if (mDrillMode) mPaintMode = false;  // mutually exclusive
+            }
+            // Paint mode: mark segmentation label at cursor position.
+            if (imguiCheck("Paint Mode  (segmentation)",   mPaintMode))
+            {
                 mPaintMode = !mPaintMode;
+                if (mPaintMode) mDrillMode = false;
+            }
         }
     }
 
@@ -192,6 +215,10 @@ public:
         // If in paint mode, paint voxels under the cursor.
         if (mPaintMode && mVolumeLoaded)
             PaintAt(g_hapticsUpdates.cursorPosition, /*label=*/1);
+
+        // If in drill mode, remove material around the cursor.
+        if (mDrillMode && mVolumeLoaded)
+            DrillAt(g_hapticsUpdates.cursorPosition);
     }
 
     void Draw(int pass) override
@@ -206,47 +233,121 @@ public:
 
     // ----------------------------------------------------------------------
     // Haptic force feedback (called from the haptics thread)
-    // Returns a gradient-based repulsion force so the tool "feels" tissue
-    // boundaries.  Returns zero when no volume is loaded or the tool is
-    // outside the volume bounding box.
+    //
+    // Coordinate system notes
+    // -----------------------
+    // g_hapticsUpdates.cursorPosition is in FleX world space, produced by:
+    //     FromChai(g_chaiTool->m_hapticPoint->getGlobalPosProxy())
+    // where FromChai(Xc,Yc,Zc) = Vec3(Yc, Zc, Xc).  Therefore:
+    //
+    //   FleX X = CHAI3D Y  = physical UP    of the haptic device
+    //   FleX Y = CHAI3D Z  = physical FORWARD (drill axis)
+    //   FleX Z = CHAI3D X  = physical RIGHT of the haptic device
+    //
+    // The DICOM volume is placed so that:
+    //   FleX Z (physical right)   → DICOM column direction (texture X, mDimX)
+    //   FleX X (physical up)      → DICOM row    direction (texture Y, mDimY)
+    //   FleX Y (physical forward) → DICOM slice  direction (texture Z, mDimZ)
+    //
+    // This ensures moving the physical device RIGHT moves the cursor
+    // visually right across the rendered volume, UP moves it up, and
+    // FORWARD (the natural drill direction) penetrates into the slices.
+    //
+    // The same mapping is used in the GLSL fragment shader (VolumeFS).
     // ----------------------------------------------------------------------
     virtual Vec3 GetHapticForce(const Vec3& worldPos) override
     {
         if (!mVolumeLoaded) return Vec3(0.f);
 
-        // World → voxel indices (volume is centered at the world origin).
-        float fx = worldPos.x / mSpacingX + mDimX * 0.5f;
-        float fy = worldPos.y / mSpacingY + mDimY * 0.5f;
-        float fz = worldPos.z / mSpacingZ + mDimZ * 0.5f;
+        // Convert FleX world position → voxel indices using the
+        // corrected axis mapping (same mapping as the render shader).
+        int ix, iy, iz;
+        if (!WorldToVoxel(worldPos, ix, iy, iz)) return Vec3(0.f);
 
-        int ix = (int)fx, iy = (int)fy, iz = (int)fz;
+        // Clamp to interior (need neighbours for gradient).
         if (ix < 1 || ix >= mDimX - 1 ||
             iy < 1 || iy >= mDimY - 1 ||
             iz < 1 || iz >= mDimZ - 1)
             return Vec3(0.f);
 
-        // Thread-safe read: mVoxelDataNorm is written once during load and
-        // never modified again, so we can read from any thread.
-        auto sample = [&](int x, int y, int z) -> float
+        // Thread-safe reads: mVoxelDataNorm written once at load; may be zeroed
+        // in DrillAt() on the main thread (voxel-level races cause at most a
+        // one-frame force glitch — acceptable for real-time haptics).
+        auto sampleAt = [&](int cx, int cy, int cz) -> float
         {
-            if (x < 0 || x >= mDimX || y < 0 || y >= mDimY ||
-                z < 0 || z >= mDimZ) return 0.f;
-            return mVoxelDataNorm[(size_t)z * mDimX * mDimY + y * mDimX + x];
+            if (cx < 0 || cx >= mDimX || cy < 0 || cy >= mDimY ||
+                cz < 0 || cz >= mDimZ) return 0.f;
+            return mVoxelDataNorm[(size_t)cz * mDimX * mDimY + cy * mDimX + cx];
         };
 
-        // Central-difference gradient.
-        Vec3 grad(
-            sample(ix + 1, iy, iz) - sample(ix - 1, iy, iz),
-            sample(ix, iy + 1, iz) - sample(ix, iy - 1, iz),
-            sample(ix, iy, iz + 1) - sample(ix, iy, iz - 1)
-        );
+        float density = sampleAt(ix, iy, iz);
 
-        float gradMag = Length(grad);
+        // ------------------------------------------------------------------
+        // Drill mode: resist tool motion proportional to material density.
+        // Force opposes the tool velocity direction.
+        // ------------------------------------------------------------------
+        if (mDrillMode)
+        {
+            if (density < mDrillThreshold) return Vec3(0.f);
+
+            Vec3 vel = g_hapticsUpdates.cursorVelocity;
+            float speed = Length(vel);
+            if (speed < 1e-6f) return Vec3(0.f);
+
+            // Resistance force: push back along direction of motion,
+            // scaled by material density.
+            float resistMag = mDrillForceScale * density;
+            return -Normalize(vel) * resistMag;
+        }
+
+        // ------------------------------------------------------------------
+        // Navigation mode: gradient-based boundary repulsion.
+        // Gradient computed in voxel space (columns, rows, slices) then
+        // transformed back to FleX world space axes using the inverse
+        // of the world→voxel permutation:
+        //   grad_voxel.x (column) → FleX Z direction
+        //   grad_voxel.y (row)    → FleX X direction
+        //   grad_voxel.z (slice)  → FleX Y direction
+        // ------------------------------------------------------------------
+
+        // Central-difference gradient in voxel (column, row, slice) space.
+        float dCol   = sampleAt(ix+1, iy, iz) - sampleAt(ix-1, iy, iz);
+        float dRow   = sampleAt(ix, iy+1, iz) - sampleAt(ix, iy-1, iz);
+        float dSlice = sampleAt(ix, iy, iz+1) - sampleAt(ix, iy, iz-1);
+
+        // Permute back to FleX world axes (inverse of world→voxel mapping):
+        //   column (ix) ← FleX Z → FleX gradient component Z
+        //   row    (iy) ← FleX X → FleX gradient component X
+        //   slice  (iz) ← FleX Y → FleX gradient component Y
+        Vec3 gradWorld(dRow,    // FleX X
+                       dSlice,  // FleX Y
+                       dCol);   // FleX Z
+
+        float gradMag = Length(gradWorld);
         if (gradMag < 1e-5f) return Vec3(0.f);
 
-        // Repulsion along the gradient (push away from high-density boundary).
         float forceMag = mHapticForceScale * Min(gradMag, 1.0f);
-        return -Normalize(grad) * forceMag;
+        return -Normalize(gradWorld) * forceMag;
+    }
+
+    // ----------------------------------------------------------------------
+    // WorldToVoxel: convert FleX world position → voxel indices
+    //
+    // Axis mapping (consistent with the GLSL shader):
+    //   FleX Z (physical right, CHAI3D X) → DICOM column index  ix
+    //   FleX X (physical up,    CHAI3D Y) → DICOM row    index  iy
+    //   FleX Y (physical fwd,   CHAI3D Z) → DICOM slice  index  iz
+    //
+    // Returns true if the position is inside the volume bounding box.
+    // ----------------------------------------------------------------------
+    bool WorldToVoxel(const Vec3& worldPos, int& ix, int& iy, int& iz) const
+    {
+        ix = (int)(worldPos.z / mSpacingX + mDimX * 0.5f);  // FleX Z → column
+        iy = (int)(worldPos.x / mSpacingY + mDimY * 0.5f);  // FleX X → row
+        iz = (int)(worldPos.y / mSpacingZ + mDimZ * 0.5f);  // FleX Y → slice
+        return ix >= 0 && ix < mDimX
+            && iy >= 0 && iy < mDimY
+            && iz >= 0 && iz < mDimZ;
     }
 
     // ----------------------------------------------------------------------
@@ -256,9 +357,8 @@ public:
     {
         if (!mVolumeLoaded) return;
 
-        int cx = (int)(worldPos.x / mSpacingX + mDimX * 0.5f);
-        int cy = (int)(worldPos.y / mSpacingY + mDimY * 0.5f);
-        int cz = (int)(worldPos.z / mSpacingZ + mDimZ * 0.5f);
+        int cx, cy, cz;
+        WorldToVoxel(worldPos, cx, cy, cz);
 
         bool painted = false;
         for (int dz = -mPaintRadius; dz <= mPaintRadius; ++dz)
@@ -276,6 +376,45 @@ public:
         if (painted) mLabelDirty = true;
     }
 
+    // ----------------------------------------------------------------------
+    // DrillAt: remove material in a sphere around the cursor (drill mode).
+    // Sets voxels to label 255 ("drilled") and zeroes the intensity in the
+    // haptic data so subsequent samples return no resistance in the channel.
+    // The label volume is rendered as a transparent hole (label 255 gets
+    // alpha=0 in the shader).
+    // ----------------------------------------------------------------------
+    void DrillAt(const Vec3& worldPos)
+    {
+        if (!mVolumeLoaded) return;
+
+        // Only drill if the cursor is actually inside material.
+        int cx, cy, cz;
+        if (!WorldToVoxel(worldPos, cx, cy, cz)) return;
+
+        float density = mVoxelDataNorm[(size_t)cz * mDimX * mDimY + cy * mDimX + cx];
+        if (density < mDrillThreshold) return;
+
+        bool changed = false;
+        for (int dz = -mDrillBrushRadius; dz <= mDrillBrushRadius; ++dz)
+        for (int dy = -mDrillBrushRadius; dy <= mDrillBrushRadius; ++dy)
+        for (int dx = -mDrillBrushRadius; dx <= mDrillBrushRadius; ++dx)
+        {
+            if (dx*dx + dy*dy + dz*dz > mDrillBrushRadius*mDrillBrushRadius)
+                continue;
+            int x = cx+dx, y = cy+dy, z = cz+dz;
+            if (x < 0 || x >= mDimX || y < 0 || y >= mDimY ||
+                z < 0 || z >= mDimZ) continue;
+
+            size_t idx = (size_t)z * mDimX * mDimY + y * mDimX + x;
+            // Mark as drilled (label 255 = fully transparent in shader).
+            mLabelData[idx]     = 255;
+            // Zero out haptic data so the drilled channel feels empty.
+            mVoxelDataNorm[idx] = 0.f;
+            changed = true;
+        }
+        if (changed) mLabelDirty = true;
+    }
+
 private:
 
     // ------------------------------------------------------------------
@@ -286,7 +425,15 @@ private:
     bool        mVolumeLoaded;
 
     int   mDimX, mDimY, mDimZ;
-    float mSpacingX, mSpacingY, mSpacingZ; // world-space voxel size (metres)
+    float mSpacingX, mSpacingY, mSpacingZ;  // voxel size in metres (DICOM mm→m)
+
+    // World-space half-extents for the FleX world bounding box of the volume,
+    // AFTER the axis permutation that aligns CHAI3D physical axes with DICOM:
+    //   mWorldHX = DICOM row    half-size = mDimY * mSpacingY / 2  (FleX X extent)
+    //   mWorldHY = DICOM slice  half-size = mDimZ * mSpacingZ / 2  (FleX Y extent)
+    //   mWorldHZ = DICOM column half-size = mDimX * mSpacingX / 2  (FleX Z extent)
+    float mWorldHX, mWorldHY, mWorldHZ;
+
     float mDataMin, mDataMax;               // raw min/max of loaded data
 
     float mWindowCenter;    // normalized [0..1]
@@ -296,13 +443,26 @@ private:
 
     bool  mPaintMode;
     int   mPaintRadius;
+
+    bool  mDrillMode;
+    float mDrillThreshold;    // normalized intensity below which no resistance
+    int   mDrillBrushRadius;  // voxel radius of the drill tip sphere
+    float mDrillForceScale;   // magnitude of resistance force
+
     bool  mLabelDirty;
 
     // Normalized [0..1] float voxel data for haptics (CPU side).
-    // Written once during load; safe to read from haptics thread thereafter.
+    // Written at load time; drill mode may zero drilled voxels.
+    // Haptics thread reads this; main thread writes it only in DrillAt().
+    // The two operations are not strictly synchronized but voxel-level
+    // races cause at most one-frame force glitches — acceptable for
+    // a real-time haptic simulation.
     std::vector<float>    mVoxelDataNorm;
 
-    // Segmentation label volume (uint8, 0 = unlabeled).
+    // Segmentation / drill label volume (uint8).
+    //   0   = unlabeled (normal material)
+    //   1   = painted segmentation (red overlay)
+    //   255 = drilled (transparent in shader)
     std::vector<uint8_t>  mLabelData;
 
     // OpenGL handles (stored as unsigned int to avoid requiring GL headers
@@ -371,6 +531,12 @@ private:
         mSpacingY = (sp && sp[1] > 0.0) ? (float)(sp[1] * 0.001) : 0.001f;
         double zsp = sorted ? sorter.GetZSpacing() : 0.0;
         mSpacingZ = (zsp > 0.0) ? (float)(zsp * 0.001) : mSpacingX;
+
+        // Compute FleX world-space extents after axis permutation.
+        // DICOM column (X) → FleX Z; DICOM row (Y) → FleX X; DICOM slice → FleX Y.
+        mWorldHX = mDimY * mSpacingY * 0.5f;  // FleX X ↔ DICOM row
+        mWorldHY = mDimZ * mSpacingZ * 0.5f;  // FleX Y ↔ DICOM slice
+        mWorldHZ = mDimX * mSpacingX * 0.5f;  // FleX Z ↔ DICOM column
 
         gdcm::PixelFormat pf         = img0.GetPixelFormat();
         unsigned int      bpp        = pf.GetPixelSize(); // bytes per pixel
@@ -537,7 +703,17 @@ private:
             "\n"
             "    for (int i = 0; i < uRaySteps; ++i) {\n"
             "        vec3  p  = uCamPos + rayDir * (tNear + (float(i) + 0.5) * stepSize);\n"
-            "        vec3  tc = (p - volMin) / (volMax - volMin);\n"  // [0..1]
+            "\n"
+            "        // Map FleX world position → normalized DICOM texture coordinate.\n"
+            "        // Axis permutation (matches WorldToVoxel() in C++):\n"
+            "        //   FleX Z (physical right, uVolHalfSize.z) → DICOM column (tc.x)\n"
+            "        //   FleX X (physical up,    uVolHalfSize.x) → DICOM row    (tc.y)\n"
+            "        //   FleX Y (physical fwd,   uVolHalfSize.y) → DICOM slice  (tc.z)\n"
+            "        vec3 tc = vec3(\n"
+            "            (p.z + uVolHalfSize.z) / (2.0 * uVolHalfSize.z),\n"
+            "            (p.x + uVolHalfSize.x) / (2.0 * uVolHalfSize.x),\n"
+            "            (p.y + uVolHalfSize.y) / (2.0 * uVolHalfSize.y)\n"
+            "        );\n"
             "        if (any(lessThan(tc, vec3(0.0))) || any(greaterThan(tc, vec3(1.0)))) continue;\n"
             "\n"
             "        float raw = texture(uVolume, tc).r;\n"
@@ -546,11 +722,12 @@ private:
             "        // Transfer function: simple gray ramp.\n"
             "        vec4 s = vec4(v, v, v, v * 0.04);\n"
             "\n"
-            "        // Segmentation overlay (label > 0 -> red).\n"
+            "        // Label overlay:\n"
+            "        //   label 1   → red   (painted segmentation)\n"
+            "        //   label 255 → transparent (drilled channel)\n"
             "        uint lbl = texture(uLabels, tc).r;\n"
-            "        if (lbl > 0u) {\n"
-            "            s = vec4(1.0, 0.2, 0.2, 0.5);\n"
-            "        }\n"
+            "        if (lbl == 255u) { s = vec4(0.0); }         // drilled: show nothing\n"
+            "        else if (lbl > 0u) { s = vec4(1.0, 0.2, 0.2, 0.5); }  // painted: red\n"
             "\n"
             "        // Front-to-back compositing.\n"
             "        accum.rgb += (1.0 - accum.a) * s.a * s.rgb;\n"
@@ -609,10 +786,12 @@ private:
     {
         if (!mVolumeShader || !mVolumeTex || !mLabelTex) return;
 
-        // Volume half-extents in world space (metres).
-        float hx = mDimX * mSpacingX * 0.5f;
-        float hy = mDimY * mSpacingY * 0.5f;
-        float hz = mDimZ * mSpacingZ * 0.5f;
+        // World-space bounding box half-extents after axis permutation:
+        //   mWorldHX (FleX X) ↔ DICOM row    direction
+        //   mWorldHY (FleX Y) ↔ DICOM slice  direction
+        //   mWorldHZ (FleX Z) ↔ DICOM column direction
+        // This matches the WorldToVoxel() mapping and the shader tc formula.
+        float hx = mWorldHX, hy = mWorldHY, hz = mWorldHZ;
 
         // Rebuild proxy cube if dimensions changed.
         if (mProxySizeHX != hx || mProxySizeHY != hy || mProxySizeHZ != hz)
@@ -628,7 +807,7 @@ private:
                       * RotationMatrix(-g_camAngle.y,
                             Vec3(cosf(-g_camAngle.x), 0.f, sinf(-g_camAngle.x)))
                       * TranslationMatrix(-Point3(g_camPos));
-        Matrix44 mvp  = proj * view;   // no model transform; volume at world origin
+        Matrix44 mvp  = proj * view;   // volume centered at world origin
 
         glUseProgram(mVolumeShader);
 
@@ -645,6 +824,9 @@ private:
         // Upload uniforms.
         glUniformMatrix4fv(glGetUniformLocation(mVolumeShader, "uMVP"),
                            1, GL_FALSE, (const float*)&mvp);
+        // uVolHalfSize encodes the FleX world extents: (hrow, hslice, hcol).
+        // The shader uses these to both define the ray-AABB and to compute tc
+        // via the axis-permuted formula (see VolumeFS comments).
         glUniform3f(glGetUniformLocation(mVolumeShader, "uVolHalfSize"), hx, hy, hz);
         glUniform3f(glGetUniformLocation(mVolumeShader, "uCamPos"),
                     g_camPos.x, g_camPos.y, g_camPos.z);
