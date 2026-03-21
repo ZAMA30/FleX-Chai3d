@@ -77,7 +77,7 @@ typedef std::shared_ptr<cImage> cImagePtr;
     GL_LUMINANCE, GL_RGB, and GL_RGBA. \n
     Several file formats are also supported for loading and saving images 
     to disk. These include __bmp__, __gif__, __jpg__, __png__, __ppm__, 
-    and __raw__.
+    __raw__, and __dcm__ (DICOM).
 */
 //==============================================================================
 class cImage

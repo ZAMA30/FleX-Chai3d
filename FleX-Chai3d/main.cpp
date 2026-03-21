@@ -3679,6 +3679,7 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Water", false));
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Goo", true));
 	//g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
+	g_scenes.push_back(new DicomVolume("Dixon DICOM Volume"));
 
 	// init graphics
 	RenderInitOptions options;
