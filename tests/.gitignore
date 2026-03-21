@@ -1,0 +1,4 @@
+# Compiled test binaries
+test_dicomvolume_coords
+*.exe
+*.o

@@ -3245,6 +3245,10 @@ void updateHaptics(void)
 				Vec3 dampingForce = -1.0f * deviceVelocity;
 				netForce += dampingForce;
 
+				// Scene-specific haptic force (e.g. DICOM volume gradient repulsion).
+				// GetHapticForce() is safe to call even when no volume is loaded.
+				netForce += g_scenes[g_scene]->GetHapticForce(g_hapticsUpdates.cursorPosition);
+
 				// Update the chai3d world
 				g_chaiWorld->computeGlobalPositions();
 
@@ -3679,6 +3683,9 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Water", false));
 	g_scenes.push_back(new FluidClothCoupling("Fluid Cloth Coupling Goo", true));
 	//g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
+
+	// DICOM volume scene: loads a DICOM series and renders with haptic feedback
+	g_scenes.push_back(new DicomVolume("DICOM Volume"));
 
 	// init graphics
 	RenderInitOptions options;

@@ -75,6 +75,11 @@ public:
 	virtual void DoGui() {}
 	virtual void CenterCamera() {}
 
+	// Optional: return a scene-specific haptic force for the tool at the
+	// given world-space position.  Default implementation returns zero so
+	// existing scenes are unaffected.
+	virtual Vec3 GetHapticForce(const Vec3& /*toolPos*/) { return Vec3(0.f); }
+
 	virtual Matrix44 GetBasis() { return Matrix44::kIdentity; }	
 
 	virtual const char* GetName() { return mName; }
@@ -139,3 +144,4 @@ public:
 #include "scenes/viscosity.h"
 #include "scenes/waterballoon.h"
 #include "scenes/streams.h"
+#include "scenes/dicomvolume.h"
