@@ -44,9 +44,17 @@
 //------------------------------------------------------------------------------
 #include "CMultiImage.h"
 //------------------------------------------------------------------------------
+#include "files/CFileImageDCM.h"
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+//------------------------------------------------------------------------------
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <dirent.h>
+#endif
 //------------------------------------------------------------------------------
 using namespace std;
 //------------------------------------------------------------------------------
@@ -1124,6 +1132,138 @@ int cMultiImage::loadFromFiles(const std::string& a_basename,
     {
         return (false);
     }
+}
+
+
+//==============================================================================
+/*!
+    This method scans a directory for all files whose extension matches
+    \p a_extension (case-insensitive), sorts them by their DICOM slice
+    position (Image Position Patient Z, tag 0020,0032) when available –
+    or falls back to alphabetical order – and then loads them as an
+    ordered image stack.
+
+    This is the correct way to load a directory of DICOM (.dcm) files such
+    as a Dixon MRI series, where the filenames do not necessarily follow a
+    sequential numeric naming convention.
+
+    \param  a_directory  Path to the directory containing the image files.
+    \param  a_extension  File extension to look for (default: "dcm").
+
+    \return The number of images actually loaded into the set.
+*/
+//==============================================================================
+int cMultiImage::loadFromDirectory(const std::string& a_directory,
+                                   const std::string& a_extension)
+{
+    // Normalise the directory path – ensure it ends with a separator.
+    string dir = a_directory;
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+    {
+#if defined(_WIN32)
+        dir += '\\';
+#else
+        dir += '/';
+#endif
+    }
+
+    // Convert the requested extension to lower case for comparison.
+    string extLower = a_extension;
+    transform(extLower.begin(), extLower.end(), extLower.begin(), ::tolower);
+
+    // Collect matching filenames.
+    vector<string> found;
+
+#if defined(_WIN32)
+    // Windows: use FindFirstFile / FindNextFile.
+    string pattern = dir + "*." + a_extension;
+    WIN32_FIND_DATAA ffd;
+    HANDLE hFind = FindFirstFileA(pattern.c_str(), &ffd);
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            {
+                string name(ffd.cFileName);
+                // Check extension (case-insensitive).
+                size_t dot = name.rfind('.');
+                if (dot != string::npos)
+                {
+                    string ext = name.substr(dot + 1);
+                    transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                    if (ext == extLower)
+                        found.push_back(dir + name);
+                }
+            }
+        } while (FindNextFileA(hFind, &ffd));
+        FindClose(hFind);
+    }
+#else
+    // POSIX: use opendir / readdir.
+    DIR* dp = opendir(dir.c_str());
+    if (dp)
+    {
+        struct dirent* ep;
+        while ((ep = readdir(dp)) != nullptr)
+        {
+            string name(ep->d_name);
+            size_t dot = name.rfind('.');
+            if (dot != string::npos)
+            {
+                string ext = name.substr(dot + 1);
+                transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                if (ext == extLower)
+                    found.push_back(dir + name);
+            }
+        }
+        closedir(dp);
+    }
+#endif
+
+    if (found.empty()) return 0;
+
+    // Sort files by DICOM slice position when the extension is "dcm";
+    // otherwise use alphabetical order.
+    if (extLower == "dcm")
+    {
+        // Sort files by DICOM slice position.
+        // First sort alphabetically so that files without slice position
+        // metadata have a consistent relative order.
+        sort(found.begin(), found.end());
+
+        // Build a sortable list of (position, filename) pairs.
+        // Files that do not contain position metadata are grouped at the end
+        // by using a large fallback value derived from the file count and
+        // their alphabetical index.  This avoids conflicts with real slice
+        // positions while still preserving the alphabetical relative order.
+        vector<pair<double, string>> indexed;
+        indexed.reserve(found.size());
+
+        double fallbackBase = static_cast<double>(found.size()) * 1e6;
+        for (size_t i = 0; i < found.size(); ++i)
+        {
+            double pos = 0.0;
+            if (!cGetDCMSlicePosition(found[i], pos))
+                pos = fallbackBase + static_cast<double>(i);
+            indexed.push_back(make_pair(pos, found[i]));
+        }
+
+        stable_sort(indexed.begin(), indexed.end(),
+                    [](const pair<double,string>& a,
+                       const pair<double,string>& b)
+                    { return a.first < b.first; });
+
+        found.clear();
+        for (size_t i = 0; i < indexed.size(); ++i)
+            found.push_back(indexed[i].second);
+    }
+    else
+    {
+        sort(found.begin(), found.end());
+    }
+
+    return loadFromFiles(found);
 }
 
 

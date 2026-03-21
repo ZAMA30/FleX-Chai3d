@@ -96,6 +96,7 @@ public:
 #include "scenes/darts.h"
 #include "scenes/debris.h"
 #include "scenes/deformables.h"
+#include "scenes/dicomvolume.h"
 #include "scenes/envcloth.h"
 #include "scenes/flag.h"
 #include "scenes/fluidblock.h"

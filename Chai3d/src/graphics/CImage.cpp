@@ -44,6 +44,7 @@
 //------------------------------------------------------------------------------
 #include "graphics/CImage.h"
 #include "files/CFileImageBMP.h"
+#include "files/CFileImageDCM.h"
 #include "files/CFileImageGIF.h"
 #include "files/CFileImageJPG.h"
 #include "files/CFileImagePNG.h"
@@ -1487,6 +1488,14 @@ bool cImage::loadFromFile(const string& a_filename)
     else if (fileType == "raw")
     {
         result = cLoadFileRAW(this, a_filename);
+    }
+
+    //--------------------------------------------------------------------
+    // .DCM FORMAT (DICOM)
+    //--------------------------------------------------------------------
+    else if (fileType == "dcm")
+    {
+        result = cLoadFileDCM(this, a_filename);
     }
 
     return (result);

@@ -258,6 +258,9 @@ public:
     //! This method loads an image set from a set of similarly named images.
     virtual int loadFromFiles(const std::string& a_basename, const std::string& a_extension, unsigned long a_max = 9999);
 
+    //! This method loads an image set from all files with a given extension inside a directory.
+    virtual int loadFromDirectory(const std::string& a_directory, const std::string& a_extension = "dcm");
+
     //! This method adds an image file to the set if size and format are compatible.
     virtual bool addFromFile(const std::string& a_filename, unsigned long a_index=-1);
 
