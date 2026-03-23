@@ -47,6 +47,16 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
+#include <vector>
+#include <string>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
+#include "files/CFileImageDCM.h"
 //------------------------------------------------------------------------------
 using namespace std;
 //------------------------------------------------------------------------------
@@ -1308,6 +1318,116 @@ bool cMultiImage::saveToFiles(const std::string& a_basename, const std::string& 
     selectImage(currentIndex);
 
     return (success);
+}
+
+//==============================================================================
+/*!
+    Load a 3D volume from a directory of DICOM (or other) image files.
+
+    Files are filtered by \p a_extension, sorted by DICOM SliceLocation
+    (or InstanceNumber as fallback, then alphabetically), and loaded as
+    individual slices of a multi-image.
+
+    \param  a_directory  Path to the directory containing DICOM files.
+    \param  a_extension  File extension to filter (default: "dcm").
+
+    \return __true__ if at least one slice was loaded successfully.
+*/
+//==============================================================================
+bool cMultiImage::loadFromDirectory(const std::string& a_directory,
+                                    const std::string& a_extension)
+{
+    // Collect matching file paths
+    std::vector<std::string> files;
+
+    // Normalise the extension (lower case, no leading dot)
+    std::string ext = a_extension;
+    if (!ext.empty() && ext[0] == '.') ext = ext.substr(1);
+    for (char& c : ext) c = (char)tolower((unsigned char)c);
+
+    // Platform-specific directory scan
+#if defined(_WIN32)
+    std::string pattern = a_directory + "\\*." + ext;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                files.push_back(a_directory + "\\" + fd.cFileName);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+#else
+    DIR* dir = opendir(a_directory.c_str());
+    if (dir)
+    {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != nullptr)
+        {
+            if (entry->d_name[0] == '.') continue;
+            std::string name(entry->d_name);
+            // Check extension (case-insensitive)
+            std::string lname = name;
+            for (char& c : lname) c = (char)tolower((unsigned char)c);
+            size_t dotPos = lname.rfind('.');
+            if (dotPos != std::string::npos && lname.substr(dotPos + 1) == ext)
+                files.push_back(a_directory + "/" + name);
+        }
+        closedir(dir);
+    }
+#endif
+
+    if (files.empty()) return false;
+
+    // Build a list of (sliceKey, filePath) pairs for sorting
+    struct SliceEntry
+    {
+        double      key;
+        std::string path;
+        bool operator<(const SliceEntry& o) const { return key < o.key; }
+    };
+
+    std::vector<SliceEntry> entries;
+    entries.reserve(files.size());
+    for (const auto& f : files)
+    {
+        double loc = cGetDicomSliceLocation(f);
+        entries.push_back({ loc, f });
+    }
+
+    // Sort by slice key; ties are broken alphabetically by path
+    std::stable_sort(entries.begin(), entries.end(),
+        [](const SliceEntry& a, const SliceEntry& b) {
+            if (a.key != b.key) return a.key < b.key;
+            return a.path < b.path;
+        });
+
+    // Load the first file to determine dimensions and format
+    cImage probe;
+    if (!probe.loadFromFile(entries[0].path)) return false;
+
+    unsigned int width   = probe.getWidth();
+    unsigned int height  = probe.getHeight();
+    GLenum       format  = probe.getFormat();
+    GLenum       type    = probe.getType();
+    unsigned int nSlices = (unsigned int)entries.size();
+
+    // Allocate the multi-image volume
+    cleanup();
+    if (!allocate(width, height, nSlices, format, type)) return false;
+
+    // Load each slice
+    unsigned int loaded = 0;
+    for (unsigned int i = 0; i < nSlices; ++i)
+    {
+        cImage slice;
+        if (!slice.loadFromFile(entries[i].path)) continue;
+        if (slice.getWidth() != width || slice.getHeight() != height) continue;
+        if (addImage(slice, i)) ++loaded;
+    }
+
+    return loaded > 0;
 }
 
 

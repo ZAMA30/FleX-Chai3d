@@ -509,6 +509,7 @@
     <ClCompile Include="src/effects/CGenericEffect.cpp" />
     <ClCompile Include="src/files/CFileAudioWAV.cpp" />
     <ClCompile Include="src/files/CFileImageBMP.cpp" />
+    <ClCompile Include="src/files/CFileImageDCM.cpp" />
     <ClCompile Include="src/files/CFileImageGIF.cpp" />
     <ClCompile Include="src/files/CFileImageJPG.cpp" />
     <ClCompile Include="src/files/CFileImagePNG.cpp" />
@@ -612,6 +613,7 @@
     <ClInclude Include="src/effects/CGenericEffect.h" />
     <ClInclude Include="src/files/CFileAudioWAV.h" />
     <ClInclude Include="src/files/CFileImageBMP.h" />
+    <ClInclude Include="src/files/CFileImageDCM.h" />
     <ClInclude Include="src/files/CFileImageGIF.h" />
     <ClInclude Include="src/files/CFileImageJPG.h" />
     <ClInclude Include="src/files/CFileImagePNG.h" />

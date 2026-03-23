@@ -264,6 +264,9 @@ public:
     //! This method saves all images to a set of files.
     virtual bool saveToFiles(const std::string& a_basename, const std::string& a_extension);
 
+    //! This method loads a volume from a directory of DICOM files, sorted by slice position.
+    bool loadFromDirectory(const std::string& a_directory, const std::string& a_extension = "dcm");
+
 
     //--------------------------------------------------------------------------
     // PROTECTED  METHODS:

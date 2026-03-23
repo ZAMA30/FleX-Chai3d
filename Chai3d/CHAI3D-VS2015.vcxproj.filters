@@ -132,6 +132,9 @@
     <ClCompile Include="src/files/CFileImageBMP.cpp">
       <Filter>files</Filter>
     </ClCompile>
+    <ClCompile Include="src/files/CFileImageDCM.cpp">
+      <Filter>files</Filter>
+    </ClCompile>
     <ClCompile Include="src/files/CFileImageGIF.cpp">
       <Filter>files</Filter>
     </ClCompile>
@@ -1071,6 +1074,9 @@
       <Filter>effects</Filter>
     </ClInclude>
     <ClInclude Include="src/files/CFileImageBMP.h">
+      <Filter>files</Filter>
+    </ClInclude>
+    <ClInclude Include="src/files/CFileImageDCM.h">
       <Filter>files</Filter>
     </ClInclude>
     <ClInclude Include="src/files/CFileImageGIF.h">

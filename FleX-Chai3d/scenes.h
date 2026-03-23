@@ -139,3 +139,4 @@ public:
 #include "scenes/viscosity.h"
 #include "scenes/waterballoon.h"
 #include "scenes/streams.h"
+#include "scenes/dicomvolume.h"

@@ -3372,6 +3372,15 @@ int main(int argc, char* argv[])
 			if (d >= 0 && d <= 2)
 				g_graphics = d;
 		}
+
+		if (strcmp(argv[i], "--dicom") == 0 && i + 1 < argc)
+		{
+			g_dicomDirectory = argv[++i];
+		}
+		else if (strncmp(argv[i], "--dicom=", 8) == 0)
+		{
+			g_dicomDirectory = argv[i] + 8;
+		}
 	}
 
 
@@ -3442,6 +3451,7 @@ int main(int argc, char* argv[])
 	g_scenes.push_back(new BunnyBath("Bunny Bath Dam", true));
 	g_scenes.push_back(new Streams("Streams", true, true));
 	g_scenes.push_back(new RockPool("Rock Pool"));
+	g_scenes.push_back(new DicomVolume("DICOM Volume"));
 
 
 	// opening scene
