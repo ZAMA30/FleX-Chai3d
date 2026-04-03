@@ -60,6 +60,69 @@ cMatrix3d ToChaiRotMat(const Quat& a_quat) {
 	return rotMat;
 }
 
+// ---------------------------------------------------------------------------
+// cTransform <-> Matrix44 conversions
+//
+// Axis permutation (P):  chai(x,y,z) -> flex(z,x,y)
+//   flex_x = chai_y,   flex_y = chai_z,   flex_z = chai_x
+//
+// For the 3x3 rotation block the similarity transform gives:
+//   R_flex(i,j) = R_chai[(i+1)%3][(j+1)%3]
+//   R_chai(i,j) = R_flex[(i+2)%3][(j+2)%3]
+//
+// Both matrices are column-major:
+//   cTransform : m[col][row]
+//   Matrix44   : columns[col][row]
+// ---------------------------------------------------------------------------
+
+// Convert a CHAI3D cTransform (position + rotation in CHAI3D space)
+// to a FleX/OpenGL Matrix44.
+inline Matrix44 FromChai(const cTransform& t) {
+	Matrix44 result(Matrix44::kIdentity);
+
+	// Rotation block: R_flex(flex_row, flex_col) = R_chai[(flex_row+1)%3][(flex_col+1)%3]
+	// Stored as columns[flex_col][flex_row] = t.m[(flex_col+1)%3][(flex_row+1)%3]
+	for (int fc = 0; fc < 3; ++fc) {
+		int cc = (fc + 1) % 3;          // chai column index
+		for (int fr = 0; fr < 3; ++fr) {
+			int cr = (fr + 1) % 3;      // chai row index
+			result.columns[fc][fr] = (float)t.m[cc][cr];
+		}
+	}
+
+	// Translation: FromChai(pos) = Vec3(chai_y, chai_z, chai_x)
+	result.columns[3][0] = (float)t.m[3][1]; // flex_x = chai_y
+	result.columns[3][1] = (float)t.m[3][2]; // flex_y = chai_z
+	result.columns[3][2] = (float)t.m[3][0]; // flex_z = chai_x
+	result.columns[3][3] = 1.0f;
+
+	return result;
+}
+
+// Convert a FleX/OpenGL Matrix44 pose transform to a CHAI3D cTransform.
+inline cTransform ToChai(const Matrix44& m) {
+	cTransform result;
+
+	// Rotation block: R_chai(chai_row, chai_col) = R_flex[(chai_row+2)%3][(chai_col+2)%3]
+	// Stored as result.m[chai_col][chai_row] = m.columns[(chai_col+2)%3][(chai_row+2)%3]
+	for (int cc = 0; cc < 3; ++cc) {
+		int fc = (cc + 2) % 3;          // flex column index
+		for (int cr = 0; cr < 3; ++cr) {
+			int fr = (cr + 2) % 3;      // flex row index
+			result.m[cc][cr] = (double)m.columns[fc][fr];
+		}
+	}
+
+	// Translation: ToChai(pos) = cVector3d(flex_z, flex_x, flex_y)
+	result.m[3][0] = (double)m.columns[3][2]; // chai_x = flex_z
+	result.m[3][1] = (double)m.columns[3][0]; // chai_y = flex_x
+	result.m[3][2] = (double)m.columns[3][1]; // chai_z = flex_y
+
+	result.m_flagTransform = true;
+
+	return result;
+}
+
 void AddChaiMesh(cMesh* a_mesh, const Vec3& position, const Quat& rotation, const double& stiffness = 100.0, vector<cMesh*>& meshList = g_hapticsUpdates.shapeMeshes) {
 	// If a non-null mesh was added, initialize it
 	if (a_mesh) {
